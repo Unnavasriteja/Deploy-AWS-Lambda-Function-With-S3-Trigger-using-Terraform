@@ -217,4 +217,3 @@ terraform apply
 ```
 ---
 
-Let me know if you'd like me to generate this as a file for download!
