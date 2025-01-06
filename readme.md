@@ -1,76 +1,76 @@
 # Deploy AWS Lambda Function with S3 Trigger Using Terraform
 
 ## Scenario
-A team receives numerous files from a third-party vendor, who uploads them to an S3 bucket. These files are suffixed with date stamps. Over time, we accumulated over a thousand files, which presented a challenge since S3 doesn’t allow sorting objects by date when there are over 1,000 objects.
+A team receives numerous files from a third-party vendor, who uploads them to an S3 bucket. These files are suffixed with date stamps. Over time, more than a thousand files were accumulated, presenting challenges because S3 doesn’t allow sorting objects by date when the number exceeds 1,000.
 
-The team performs daily checks, downloading the current day’s file to process the information. However, they struggled to sort and locate the latest files efficiently. To address this issue, we developed a Lambda function that organizes files in a specific path into folders structured by year/month/day.
+The team performed daily checks, downloading the current day’s file for processing. However, they struggled to efficiently locate the latest files. To address this issue, a Lambda function was developed to organize files in a specific path into folders structured by `year/month/day`.
 
 ---
 
 ## Implementation
-1. **Terraform** will provision the Lambda function.
-2. **Python** will be used as the Lambda runtime.
-3. The Python script will:
-   - Pick the files uploaded to a path.
-   - Move them to their respective folder structured by year, month, and date.
-4. **S3 notification** will trigger the Lambda when new files are uploaded to a specific bucket path.
+1. **Terraform** provisions the Lambda function and supporting AWS resources.
+2. **Python** is used as the Lambda runtime.
+3. The Python script:
+   - Identifies files uploaded to a specific S3 path.
+   - Moves them to folders structured by `year/month/day`.
+4. **S3 notifications** trigger the Lambda function whenever new files are uploaded.
 
 ---
 
 ## Prerequisites
-- Basic understanding of AWS services (Lambda, S3, IAM, etc.).
+- AWS services knowledge (Lambda, S3, IAM, etc.).
 - Familiarity with Python and the `boto3` SDK.
-- Basic knowledge of Terraform.
+- Basic Terraform knowledge and installation.
 
 ---
 
-## Project Setup
-The file structure will look like this:
+## Project Structure
 ```plaintext
 .
 ├── lambda_functions
-│   └── main.py
-├── versions.tf
-├── lambda.tf
-├── backend.tf
-├── pre-setup-script.sh
+│   └── main.py          # Python script for the Lambda function
+├── versions.tf          # Terraform providers and backend configuration
+├── lambda.tf            # Terraform resources for Lambda and S3
+├── backend.tf           # Optional: Separate backend configuration
+├── pre-setup-script.sh  # Test script to upload files
 ```
-
-Before writing the Terraform code:
-- Create a bucket named `inbound-bucket-custome` with a folder `incoming`.
-- Create another bucket for storing the Terraform state: `my-backend-devops101-terraform`.
 
 ---
 
 ## Python Script for Lambda Function
-**Path:** `lambda_functions/main.py`
+
+**File:** `lambda_functions/main.py`
 ```python
 import os
 import boto3
 
 def lambda_handler(event, context):
+    # Initialize S3 client
     s3 = boto3.client('s3')
     bucket_name = os.getenv("BUCKET_NAME")
     prefix = os.getenv("BUCKET_PATH")
 
+    # List objects in the specified prefix
     response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
 
     if 'Contents' in response:
         for obj in response['Contents']:
             key = obj['Key']
+            # Extract year, month, and day from the file name
             date_parts = key.split('-')[-1].replace('.txt', '').split('/')
             if len(date_parts) == 3:
                 year, month, day = date_parts
                 new_key = f"organized/{year}/{month}/{day}/{os.path.basename(key)}"
+                # Copy the file to the new path and delete the original
                 s3.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': key}, Key=new_key)
                 s3.delete_object(Bucket=bucket_name, Key=key)
 ```
 
 ---
 
-## Terraform Deployment
+## Deployment with Terraform
 
-### Setting up Terraform Providers and Backend
+### Setting Up Terraform Providers and Backend
 **File:** `versions.tf`
 ```hcl
 terraform {
@@ -82,24 +82,15 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "my-backend-devops101-terraform"
+    bucket         = "my-backend-devops-terraform"
     key            = "lambda/terraform.tfstate"
     region         = "ap-south-1"
   }
 }
 ```
 
-### Packaging Python Code as a Zip File
+### Creating the Lambda Function and Trigger
 **File:** `lambda.tf`
-```hcl
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/lambda_functions"
-  output_path = "${path.module}/lambda_functions/main.zip"
-}
-```
-
-### Creating Lambda Function
 ```hcl
 resource "aws_lambda_function" "s3_organizer" {
   function_name    = "s3-organizer"
@@ -111,14 +102,15 @@ resource "aws_lambda_function" "s3_organizer" {
 
   environment {
     variables = {
-      BUCKET_NAME = "inbound-bucket-custome"
+      BUCKET_NAME = "inbound-bucket-customer"
       BUCKET_PATH = "incoming"
     }
   }
 }
 ```
 
-### Creating Lambda Execution Role and Policies
+### Lambda Execution Role and Policies
+**File:** `lambda.tf`
 ```hcl
 resource "aws_iam_role" "lambda_exec" {
   name = "lambda_exec_role"
@@ -146,8 +138,8 @@ resource "aws_iam_policy" "lambda_policy" {
         Action   = ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
         Effect   = "Allow",
         Resource = [
-          "arn:aws:s3:::inbound-bucket-custome",
-          "arn:aws:s3:::inbound-bucket-custome/*"
+          "arn:aws:s3:::inbound-bucket-customer",
+          "arn:aws:s3:::inbound-bucket-customer/*"
         ]
       }
     ]
@@ -160,38 +152,17 @@ resource "aws_iam_role_policy_attachment" "lambda_policy_attach" {
 }
 ```
 
-### Creating S3 Trigger for Lambda
-```hcl
-resource "aws_lambda_permission" "allow_s3_invoke" {
-  statement_id  = "AllowS3Invoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.s3_organizer.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = "arn:aws:s3:::inbound-bucket-custome"
-}
-
-resource "aws_s3_bucket_notification" "s3_event" {
-  bucket = "inbound-bucket-custome"
-
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.s3_organizer.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "incoming/"
-  }
-}
-```
-
 ---
 
 ## Testing the Setup
-**Script:** `pre-setup-script.sh`
+**File:** `pre-setup-script.sh`
 ```bash
 #!/bin/bash
 
 # Define the S3 bucket name
-S3_BUCKET="inbound-bucket-custome"
+S3_BUCKET="inbound-bucket-customer"
 
-# Create 10 files with the format filename-randomnumber-yyyy-mm-dd
+# Create 10 files and upload them to S3
 for i in {1..10}; do
     RANDOM_NUMBER=$((1 + RANDOM % 1000))
     FILENAME="filename-$RANDOM_NUMBER-$(date +%Y-%m-%d).txt"
@@ -199,8 +170,6 @@ for i in {1..10}; do
     aws s3 cp $FILENAME s3://$S3_BUCKET/incoming/
 done
 ```
-
-Run the script to upload files to the bucket. This will trigger the Lambda function, which organizes the files into folders based on their date stamps.
 
 ---
 
@@ -215,6 +184,11 @@ terraform plan
 # Apply Terraform
 terraform apply
 ```
+
 ---
 
-Let me know if you'd like me to generate this as a file for download!
+## Troubleshooting
+- **Error: Bucket does not exist**: Ensure the S3 bucket exists before running the Terraform configuration.
+- **Lambda Invocation Errors**: Check IAM permissions for the Lambda function and S3 bucket.
+
+---
