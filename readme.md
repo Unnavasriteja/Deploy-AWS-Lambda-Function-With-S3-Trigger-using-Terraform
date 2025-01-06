@@ -184,11 +184,6 @@ terraform plan
 # Apply Terraform
 terraform apply
 ```
-
 ---
 
-## Troubleshooting
-- **Error: Bucket does not exist**: Ensure the S3 bucket exists before running the Terraform configuration.
-- **Lambda Invocation Errors**: Check IAM permissions for the Lambda function and S3 bucket.
-
----
+Let me know if you'd like me to generate this as a file for download!
